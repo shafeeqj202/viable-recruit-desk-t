@@ -5,6 +5,8 @@
 /* ---------- constants (mirrors server/constants.js) ---------- */
 var JOB_STATUSES = ['Open','On Hold','Closed'];
 var JOB_STATUS_CLASS = {'Open':'stage-good','On Hold':'stage-warn','Closed':'stage-neutral'};
+var JOB_PRIORITIES = ['Low','Medium','High','Very High'];
+var JOB_PRIORITY_CLASS = {'Low':'stage-neutral','Medium':'stage-active','High':'stage-warn','Very High':'stage-bad'};
 var WORK_RIGHTS_OPTIONS = ['Citizen','Permanent Resident','Work Visa (no sponsorship needed)','Requires Sponsorship','Any / Unspecified'];
 var ENGAGEMENT_TYPES = ['Contract','Permanent'];
 var LOCATION_TYPES = ['Onshore','Offshore'];
@@ -99,6 +101,7 @@ function initials(name){
   if(!parts.length) return '?';
   return (parts[0][0]+(parts[1]?parts[1][0]:'')).toUpperCase();
 }
+function isChecked(v){ return v===true || v==='1' || v==='on'; }
 
 /* ---------- state ---------- */
 var state = { jobs: [], candidates: [] };
@@ -112,7 +115,7 @@ var ui = {
   tab: 'dashboard',
   jobsSearch:'', jobsStatusFilter:'All',
   candSearch:'', candStatusFilter:'All', candJobFilter:'All',
-  dashJobStatusFilter:'All', dashLocationFilter:'All', dashPartnerFilter:'All', dashCandStatusFilter:'All',
+  dashJobStatusFilter:'All', dashLocationFilter:'All', dashPartnerFilter:'All', dashCandStatusFilter:'All', dashPriorityFilter:'All',
   jobModal:null,      /* {mode:'new'|'edit', jobId, formValues} */
   candModal:null,     /* {mode:'new'|'edit', candidateId, presetJobId, formValues, resumeFile, removeResume} */
   drilldown:null,     /* {jobId, status|'__total__'} */
@@ -128,7 +131,7 @@ var ui = {
     var raw = sessionStorage.getItem('vrd_ui');
     if(raw){
       var saved = JSON.parse(raw);
-      ['tab','jobsSearch','jobsStatusFilter','candSearch','candStatusFilter','candJobFilter','dashJobStatusFilter','dashLocationFilter','dashPartnerFilter','dashCandStatusFilter'].forEach(function(k){
+      ['tab','jobsSearch','jobsStatusFilter','candSearch','candStatusFilter','candJobFilter','dashJobStatusFilter','dashLocationFilter','dashPartnerFilter','dashCandStatusFilter','dashPriorityFilter'].forEach(function(k){
         if(saved[k]!==undefined) ui[k]=saved[k];
       });
     }
@@ -140,7 +143,8 @@ function persistUiToSession(){
       tab:ui.tab, jobsSearch:ui.jobsSearch, jobsStatusFilter:ui.jobsStatusFilter,
       candSearch:ui.candSearch, candStatusFilter:ui.candStatusFilter, candJobFilter:ui.candJobFilter,
       dashJobStatusFilter:ui.dashJobStatusFilter, dashLocationFilter:ui.dashLocationFilter,
-      dashPartnerFilter:ui.dashPartnerFilter, dashCandStatusFilter:ui.dashCandStatusFilter
+      dashPartnerFilter:ui.dashPartnerFilter, dashCandStatusFilter:ui.dashCandStatusFilter,
+      dashPriorityFilter:ui.dashPriorityFilter
     }));
   }catch(e){}
 }
@@ -329,7 +333,8 @@ function renderDashboard(){
     var matchesLocation = ui.dashLocationFilter==='All' || j.locationType===ui.dashLocationFilter;
     var matchesPartner = ui.dashPartnerFilter==='All' || j.partner===ui.dashPartnerFilter;
     var matchesCandStatus = ui.dashCandStatusFilter==='All' || candidatesForJob(state,j.id).some(function(c){ return c.status===ui.dashCandStatusFilter; });
-    return matchesStatus && matchesLocation && matchesPartner && matchesCandStatus;
+    var matchesPriority = ui.dashPriorityFilter==='All' || j.priority===ui.dashPriorityFilter;
+    return matchesStatus && matchesLocation && matchesPartner && matchesCandStatus && matchesPriority;
   });
 
   var visibleStatuses = ui.dashCandStatusFilter==='All' ? CANDIDATE_STATUSES : CANDIDATE_STATUSES.filter(function(s){ return s.key===ui.dashCandStatusFilter; });
@@ -347,7 +352,7 @@ function renderDashboard(){
     }).join('');
     var total = jc.length;
     return '<tr>'+
-      '<td class="job-col"><div class="job-title">'+esc(j.title)+'</div><div class="job-meta">'+esc(j.id)+' · '+esc(j.client)+(j.locationType?' · '+esc(j.locationType):'')+'</div></td>'+
+      '<td class="job-col"><div class="job-title">'+esc(j.title)+' <span class="pill '+(JOB_PRIORITY_CLASS[j.priority]||'stage-neutral')+'" style="font-size:.68rem;">'+esc(j.priority||'–')+'</span></div><div class="job-meta">'+esc(j.id)+' · '+esc(j.client)+(j.locationType?' · '+esc(j.locationType):'')+'</div></td>'+
       cells+
       '<td class="total-col">'+(total>0 ? '<button class="count-btn" data-action="drilldown" data-job="'+esc(j.id)+'" data-status="__total__">'+total+'</button>' : '<span class="count-zero">–</span>')+'</td>'+
     '</tr>';
@@ -365,6 +370,9 @@ function renderDashboard(){
   }).join('');
   var candStatusOptions = ['All'].concat(CANDIDATE_STATUSES.map(function(s){return s.key;})).map(function(s){
     return '<option value="'+esc(s)+'"'+(ui.dashCandStatusFilter===s?' selected':'')+'>'+esc(s==='All'?'All candidate statuses':s)+'</option>';
+  }).join('');
+  var priorityOptions = ['All'].concat(JOB_PRIORITIES).map(function(s){
+    return '<option value="'+esc(s)+'"'+(ui.dashPriorityFilter===s?' selected':'')+'>'+esc(s==='All'?'All priorities':s)+'</option>';
   }).join('');
 
   var legend = visibleStatuses.map(function(s){ return STATUS_ABBR[s.key]+' '+s.key; }).join(' · ');
@@ -384,6 +392,7 @@ function renderDashboard(){
         '<select data-action="dash-location-filter">'+locationOptions+'</select>'+
         '<select data-action="dash-partner-filter">'+partnerOptions+'</select>'+
         '<select data-action="dash-cand-status-filter">'+candStatusOptions+'</select>'+
+        '<select data-action="dash-priority-filter">'+priorityOptions+'</select>'+
       '</div>'+
       '<div class="matrix-legend">'+legend+'</div>'+
       '<div class="table-scroll"><table class="matrix"><thead><tr><th class="job-col">Job</th>'+headCells+'<th class="total-col">Total</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
@@ -418,6 +427,7 @@ function renderJobsView(){
       '<td>'+esc(j.workRights)+'</td>'+
       '<td>'+esc(j.engagementType)+(j.engagementType==='Contract' && j.duration ? '<div class="muted" style="font-size:.76rem;">'+esc(j.duration)+'</div>' : '')+'</td>'+
       '<td><span class="pill '+(LOCATION_TYPE_CLASS[j.locationType]||'stage-neutral')+'">'+esc(j.locationType||'–')+'</span></td>'+
+      '<td><span class="pill '+(JOB_PRIORITY_CLASS[j.priority]||'stage-neutral')+'">'+esc(j.priority||'–')+'</span></td>'+
       '<td>'+fmtDateOnly(j.startDate)+'</td>'+
       '<td class="tabular">'+esc(j.onshoreRate||'–')+' / '+esc(j.offshoreRate||'–')+'</td>'+
       '<td><select data-action="job-status-change" data-job="'+esc(j.id)+'">'+jobStatusOpts+'</select></td>'+
@@ -430,7 +440,7 @@ function renderJobsView(){
   }).join('');
 
   var body = jobs.length ? ('<div class="table-scroll"><table class="data"><thead><tr>'+
-    '<th>Job ID</th><th>Title / Skills</th><th>Client</th><th>Location</th><th>Work Rights</th><th>Type</th><th>Onshore/Offshore</th><th>Start Date</th><th>Rate (On/Off)</th><th>Status</th><th>Candidates</th><th></th>'+
+    '<th>Job ID</th><th>Title / Skills</th><th>Client</th><th>Location</th><th>Work Rights</th><th>Type</th><th>Onshore/Offshore</th><th>Priority</th><th>Start Date</th><th>Rate (On/Off)</th><th>Status</th><th>Candidates</th><th></th>'+
     '</tr></thead><tbody>'+rows+'</tbody></table></div>') :
     '<div class="empty-state"><h3>No jobs match your filters</h3><p>Try clearing the search or status filter.</p></div>';
 
@@ -490,7 +500,7 @@ function renderCandidatesView(){
     }
     return '<tr>'+
       '<td class="id-cell">'+esc(c.id)+'</td>'+
-      '<td><strong>'+esc(c.name)+'</strong>'+(c.resume?' <span class="muted" title="Resume attached">📎</span>':'')+'</td>'+
+      '<td><strong>'+esc(c.name)+'</strong>'+(c.resume?' <span class="muted" title="Resume attached">📎</span>':'')+(c.blacklisted?' <span class="pill stage-bad" title="Blacklisted">Blacklisted</span>':'')+(c.viableFte?' <span class="pill stage-good" title="Viable FTE">Viable FTE</span>':'')+'</td>'+
       '<td>'+(job?esc(job.title):'<span class="muted">Unassigned</span>')+(job?'<div class="muted" style="font-size:.76rem;">'+esc(job.client)+'</div>':'')+'</td>'+
       '<td>'+esc(c.workRights)+'</td>'+
       '<td>'+esc(c.location)+'</td>'+
@@ -521,7 +531,7 @@ function renderCandidatesView(){
 function renderJobModal(){
   var editing = ui.jobModal.mode==='edit';
   var j = editing ? jobById(state, ui.jobModal.jobId) : null;
-  var defaults = {id:'', title:'', skills:'', client:'', partner:'', location:'', workRights:WORK_RIGHTS_OPTIONS[0], engagementType:'Contract', locationType:'Onshore', startDate:'', duration:'', onshoreRate:'', offshoreRate:'', description:'', status:'Open'};
+  var defaults = {id:'', title:'', skills:'', client:'', partner:'', location:'', workRights:WORK_RIGHTS_OPTIONS[0], engagementType:'Contract', locationType:'Onshore', startDate:'', duration:'', onshoreRate:'', offshoreRate:'', description:'', status:'Open', priority:'Medium'};
   var v = Object.assign({}, defaults, j||{}, ui.jobModal.formValues||{});
   var errs = ui.fieldErrors;
   function errHtml(f){ return errs[f] ? '<div class="err">'+esc(errs[f])+'</div>' : ''; }
@@ -530,6 +540,7 @@ function renderJobModal(){
   var engOpts = ENGAGEMENT_TYPES.map(function(o){return '<option value="'+esc(o)+'"'+(v.engagementType===o?' selected':'')+'>'+esc(o)+'</option>';}).join('');
   var locOpts = LOCATION_TYPES.map(function(o){return '<option value="'+esc(o)+'"'+(v.locationType===o?' selected':'')+'>'+esc(o)+'</option>';}).join('');
   var statusOpts = JOB_STATUSES.map(function(o){return '<option value="'+esc(o)+'"'+(v.status===o?' selected':'')+'>'+esc(o)+'</option>';}).join('');
+  var priorityOpts = JOB_PRIORITIES.map(function(o){return '<option value="'+esc(o)+'"'+(v.priority===o?' selected':'')+'>'+esc(o)+'</option>';}).join('');
 
   return '<div class="overlay" data-action="overlay-close" data-which="job">'+
     '<div class="modal" data-stop="1">'+
@@ -550,6 +561,7 @@ function renderJobModal(){
           '<div class="field"><label for="f-onshore">Onshore Rate</label><input id="f-onshore" name="onshoreRate" value="'+esc(v.onshoreRate)+'" placeholder="e.g. $120/hr"></div>'+
           '<div class="field"><label for="f-offshore">Offshore Rate</label><input id="f-offshore" name="offshoreRate" value="'+esc(v.offshoreRate)+'" placeholder="e.g. $45/hr"></div>'+
           '<div class="field"><label for="f-status">Job Status</label><select id="f-status" name="status">'+statusOpts+'</select></div>'+
+          '<div class="field"><label for="f-priority">Priority</label><select id="f-priority" name="priority">'+priorityOpts+'</select></div>'+
           '<div class="field span-2"><label for="f-desc">Job Description</label><textarea id="f-desc" name="description">'+esc(v.description)+'</textarea></div>'+
         '</div>'+
         '<div class="modal-footer">'+
@@ -566,7 +578,7 @@ function renderJobModal(){
 function renderCandidateModal(){
   var editing = ui.candModal.mode==='edit';
   var c = editing ? candidateById(state, ui.candModal.candidateId) : null;
-  var defaults = {id:'', name:'', jobId:ui.candModal.presetJobId||'', workRights:WORK_RIGHTS_OPTIONS[0], location:'', availability:'', cost:'', billingRate:'', notes:'', status:'Shortlisted', statusHistory:[]};
+  var defaults = {id:'', name:'', jobId:ui.candModal.presetJobId||'', workRights:WORK_RIGHTS_OPTIONS[0], location:'', availability:'', cost:'', billingRate:'', notes:'', status:'Shortlisted', statusHistory:[], blacklisted:false, viableFte:false};
   var v = Object.assign({}, defaults, c||{}, ui.candModal.formValues||{});
   var errs = ui.fieldErrors;
   function errHtml(f){ return errs[f] ? '<div class="err">'+esc(errs[f])+'</div>' : ''; }
@@ -612,6 +624,8 @@ function renderCandidateModal(){
           '<div class="field"><label for="c-availability">Availability</label><input id="c-availability" name="availability" value="'+esc(v.availability)+'" placeholder="e.g. Immediate, 2 weeks notice"></div>'+
           '<div class="field"><label for="c-cost">Cost</label><input id="c-cost" name="cost" class="'+(inv('cost')?'invalid':'')+'" value="'+esc(v.cost)+'" placeholder="e.g. $95/hr">'+errHtml('cost')+'</div>'+
           '<div class="field"><label for="c-billing">Billing Rate</label><input id="c-billing" name="billingRate" value="'+esc(v.billingRate)+'" placeholder="e.g. $130/hr"></div>'+
+          '<div class="field"><label class="checkbox-label" for="c-blacklisted"><input type="checkbox" id="c-blacklisted" name="blacklisted" value="1" '+(isChecked(v.blacklisted)?'checked':'')+'> Blacklisted</label></div>'+
+          '<div class="field"><label class="checkbox-label" for="c-viablefte"><input type="checkbox" id="c-viablefte" name="viableFte" value="1" '+(isChecked(v.viableFte)?'checked':'')+'> Viable FTE</label></div>'+
           resumeSection+
           historyHtml+
           '<div class="field span-2"><label for="c-notes">Notes</label><textarea id="c-notes" name="notes">'+esc(v.notes)+'</textarea></div>'+
@@ -644,6 +658,8 @@ function renderDrawer(){
         '<span class="muted">Availability</span><span>'+esc(c.availability||'–')+'</span>'+
         '<span class="muted">Cost</span><span class="tabular">'+esc(c.cost||'–')+'</span>'+
         '<span class="muted">Billing Rate</span><span class="tabular">'+esc(c.billingRate||'–')+'</span>'+
+        '<span class="muted">Blacklisted</span><span>'+(c.blacklisted?'Yes':'No')+'</span>'+
+        '<span class="muted">Viable FTE</span><span>'+(c.viableFte?'Yes':'No')+'</span>'+
         '<span class="muted">Resume</span><span>'+(c.resume?('📎 '+esc(c.resume.name)+(isPdfResume(c.resume)?' <button type="button" class="link-btn" data-action="resume-preview" data-candidate="'+esc(c.id)+'">Preview</button>':'')):'–')+'</span>'+
         '<span class="muted">Updated</span><span>'+fmtDate(c.updatedAt)+'</span>'+
       '</div>'+
@@ -690,8 +706,8 @@ function renderAuthScreen(){
 }
 
 /* ---------- mutations ---------- */
-var JOB_FORM_KEYS = ['title','skills','client','partner','location','workRights','engagementType','locationType','startDate','duration','onshoreRate','offshoreRate','description','status'];
-var CAND_FORM_KEYS = ['name','jobId','workRights','location','availability','cost','billingRate','notes'];
+var JOB_FORM_KEYS = ['title','skills','client','partner','location','workRights','engagementType','locationType','startDate','duration','onshoreRate','offshoreRate','description','status','priority'];
+var CAND_FORM_KEYS = ['name','jobId','workRights','location','availability','cost','billingRate','notes','blacklisted','viableFte'];
 
 function createJobFromForm(fd){
   var raw = fdToObj(fd, JOB_FORM_KEYS);
@@ -889,6 +905,7 @@ document.addEventListener('change', function(e){
   if(action==='dash-location-filter'){ ui.dashLocationFilter = el.value; renderApp(); return; }
   if(action==='dash-partner-filter'){ ui.dashPartnerFilter = el.value; renderApp(); return; }
   if(action==='dash-cand-status-filter'){ ui.dashCandStatusFilter = el.value; renderApp(); return; }
+  if(action==='dash-priority-filter'){ ui.dashPriorityFilter = el.value; renderApp(); return; }
   if(action==='job-status-change'){
     var jid = el.getAttribute('data-job');
     var newStatus = el.value;
