@@ -49,11 +49,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   offshore_rate TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'Open',
+  priority TEXT NOT NULL DEFAULT 'Medium',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_by INTEGER REFERENCES users(id),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_by INTEGER REFERENCES users(id)
 );
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'Medium';
 
 CREATE TABLE IF NOT EXISTS candidates (
   id TEXT PRIMARY KEY,
@@ -66,6 +68,8 @@ CREATE TABLE IF NOT EXISTS candidates (
   billing_rate TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'Shortlisted',
+  blacklisted BOOLEAN NOT NULL DEFAULT false,
+  viable_fte BOOLEAN NOT NULL DEFAULT false,
   resume_name TEXT,
   resume_type TEXT,
   resume_size INTEGER,
@@ -75,6 +79,8 @@ CREATE TABLE IF NOT EXISTS candidates (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_by INTEGER REFERENCES users(id)
 );
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS blacklisted BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS viable_fte BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS idx_candidates_job_id ON candidates(job_id);
 
 CREATE TABLE IF NOT EXISTS candidate_status_history (

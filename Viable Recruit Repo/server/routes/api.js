@@ -3,7 +3,7 @@ const multer = require('multer');
 const { pool, nextSeq, bumpSeqIfHigher } = require('../db');
 const { requireAuth } = require('./auth');
 const {
-  JOB_STATUSES, CANDIDATE_STATUS_KEYS, STATUS_FLOW, RESUME_MAX_BYTES,
+  JOB_STATUSES, JOB_PRIORITIES, CANDIDATE_STATUS_KEYS, STATUS_FLOW, RESUME_MAX_BYTES,
 } = require('../constants');
 
 const router = express.Router();
@@ -16,13 +16,20 @@ const upload = multer({
 
 function pad4(n) { return String(n).padStart(4, '0'); }
 
+// Multipart/form-data (and plain JSON) checkbox parsing: a checked HTML checkbox
+// sends 'on' (or a client may send 'true'/'1'); an unchecked one sends nothing at
+// all, which arrives here as undefined. Treat undefined/false-y as false.
+function parseBool(v) {
+  return v === true || v === 'true' || v === 'on' || v === '1';
+}
+
 function jobRowToApi(r) {
   return {
     id: r.id, title: r.title, skills: r.skills, client: r.client, partner: r.partner,
     location: r.location, workRights: r.work_rights, engagementType: r.engagement_type,
     locationType: r.location_type, startDate: r.start_date, duration: r.duration,
     onshoreRate: r.onshore_rate, offshoreRate: r.offshore_rate, description: r.description,
-    status: r.status, createdAt: r.created_at,
+    status: r.status, priority: r.priority, createdAt: r.created_at,
   };
 }
 
@@ -30,7 +37,7 @@ function candidateRowToApi(r) {
   return {
     id: r.id, jobId: r.job_id, name: r.name, workRights: r.work_rights, location: r.location,
     availability: r.availability, cost: r.cost, billingRate: r.billing_rate, notes: r.notes,
-    status: r.status,
+    status: r.status, blacklisted: !!r.blacklisted, viableFte: !!r.viable_fte,
     resume: r.resume_name ? { name: r.resume_name, type: r.resume_type, size: r.resume_size } : null,
     createdAt: r.created_at, updatedAt: r.updated_at,
   };
@@ -42,7 +49,7 @@ router.get('/state', async (req, res) => {
     const [jobsR, candsR, histR] = await Promise.all([
       pool.query('SELECT * FROM jobs ORDER BY created_at DESC'),
       pool.query(`SELECT id, job_id, name, work_rights, location, availability, cost, billing_rate,
-        notes, status, resume_name, resume_type, resume_size, created_at, updated_at
+        notes, status, blacklisted, viable_fte, resume_name, resume_type, resume_size, created_at, updated_at
         FROM candidates ORDER BY created_at DESC`),
       pool.query('SELECT candidate_id, status, at FROM candidate_status_history ORDER BY at ASC'),
     ]);
@@ -72,16 +79,17 @@ router.post('/jobs', async (req, res) => {
     if (Object.keys(errors).length) return res.status(400).json({ errors });
 
     const status = JOB_STATUSES.includes(b.status) ? b.status : 'Open';
+    const priority = JOB_PRIORITIES.includes(b.priority) ? b.priority : 'Medium';
     const seq = await nextSeq('job_seq');
     const id = 'JOB-' + pad4(seq);
     const r = await pool.query(
       `INSERT INTO jobs (id, title, skills, client, partner, location, work_rights, engagement_type,
-        location_type, start_date, duration, onshore_rate, offshore_rate, description, status, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16) RETURNING *`,
+        location_type, start_date, duration, onshore_rate, offshore_rate, description, status, priority, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17) RETURNING *`,
       [id, title, String(b.skills || '').trim(), client, String(b.partner || '').trim(), location,
         String(b.workRights || ''), String(b.engagementType || ''), String(b.locationType || ''),
         String(b.startDate || ''), String(b.duration || '').trim(), String(b.onshoreRate || '').trim(),
-        String(b.offshoreRate || '').trim(), String(b.description || '').trim(), status, req.session.userId]
+        String(b.offshoreRate || '').trim(), String(b.description || '').trim(), status, priority, req.session.userId]
     );
     res.json({ job: jobRowToApi(r.rows[0]) });
   } catch (err) {
@@ -103,15 +111,16 @@ router.put('/jobs/:id', async (req, res) => {
     if (Object.keys(errors).length) return res.status(400).json({ errors });
 
     const status = JOB_STATUSES.includes(b.status) ? b.status : 'Open';
+    const priority = JOB_PRIORITIES.includes(b.priority) ? b.priority : 'Medium';
     const r = await pool.query(
       `UPDATE jobs SET title=$2, skills=$3, client=$4, partner=$5, location=$6, work_rights=$7,
         engagement_type=$8, location_type=$9, start_date=$10, duration=$11, onshore_rate=$12,
-        offshore_rate=$13, description=$14, status=$15, updated_at=now(), updated_by=$16
+        offshore_rate=$13, description=$14, status=$15, priority=$16, updated_at=now(), updated_by=$17
        WHERE id=$1 RETURNING *`,
       [req.params.id, title, String(b.skills || '').trim(), client, String(b.partner || '').trim(), location,
         String(b.workRights || ''), String(b.engagementType || ''), String(b.locationType || ''),
         String(b.startDate || ''), String(b.duration || '').trim(), String(b.onshoreRate || '').trim(),
-        String(b.offshoreRate || '').trim(), String(b.description || '').trim(), status, req.session.userId]
+        String(b.offshoreRate || '').trim(), String(b.description || '').trim(), status, priority, req.session.userId]
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Job not found.' });
     res.json({ job: jobRowToApi(r.rows[0]) });
@@ -172,10 +181,11 @@ router.post('/candidates', upload.single('resume'), async (req, res) => {
     const f = req.file;
     const r = await pool.query(
       `INSERT INTO candidates (id, job_id, name, work_rights, location, availability, cost, billing_rate,
-        notes, status, resume_name, resume_type, resume_size, resume_data, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'Shortlisted',$10,$11,$12,$13,$14,$14) RETURNING *`,
+        notes, status, blacklisted, viable_fte, resume_name, resume_type, resume_size, resume_data, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'Shortlisted',$10,$11,$12,$13,$14,$15,$16,$16) RETURNING *`,
       [id, jobId, name, String(b.workRights || ''), location, String(b.availability || '').trim(), cost,
         String(b.billingRate || '').trim(), String(b.notes || '').trim(),
+        parseBool(b.blacklisted), parseBool(b.viableFte),
         f ? f.originalname : null, f ? f.mimetype : null, f ? f.size : null, f ? f.buffer : null,
         req.session.userId]
     );
@@ -208,25 +218,28 @@ router.put('/candidates/:id', upload.single('resume'), async (req, res) => {
     const f = req.file;
     const removeResume = String(b.removeResume || '') === '1';
 
+    const blacklisted = parseBool(b.blacklisted);
+    const viableFte = parseBool(b.viableFte);
+
     let sql, params;
     if (f) {
       sql = `UPDATE candidates SET job_id=$2, name=$3, work_rights=$4, location=$5, availability=$6,
-        cost=$7, billing_rate=$8, notes=$9, resume_name=$10, resume_type=$11, resume_size=$12,
-        resume_data=$13, updated_at=now(), updated_by=$14 WHERE id=$1 RETURNING *`;
+        cost=$7, billing_rate=$8, notes=$9, blacklisted=$10, viable_fte=$11, resume_name=$12, resume_type=$13, resume_size=$14,
+        resume_data=$15, updated_at=now(), updated_by=$16 WHERE id=$1 RETURNING *`;
       params = [req.params.id, jobId, name, String(b.workRights || ''), location, String(b.availability || '').trim(),
-        cost, String(b.billingRate || '').trim(), String(b.notes || '').trim(),
+        cost, String(b.billingRate || '').trim(), String(b.notes || '').trim(), blacklisted, viableFte,
         f.originalname, f.mimetype, f.size, f.buffer, req.session.userId];
     } else if (removeResume) {
       sql = `UPDATE candidates SET job_id=$2, name=$3, work_rights=$4, location=$5, availability=$6,
-        cost=$7, billing_rate=$8, notes=$9, resume_name=NULL, resume_type=NULL, resume_size=NULL,
-        resume_data=NULL, updated_at=now(), updated_by=$10 WHERE id=$1 RETURNING *`;
+        cost=$7, billing_rate=$8, notes=$9, blacklisted=$10, viable_fte=$11, resume_name=NULL, resume_type=NULL, resume_size=NULL,
+        resume_data=NULL, updated_at=now(), updated_by=$12 WHERE id=$1 RETURNING *`;
       params = [req.params.id, jobId, name, String(b.workRights || ''), location, String(b.availability || '').trim(),
-        cost, String(b.billingRate || '').trim(), String(b.notes || '').trim(), req.session.userId];
+        cost, String(b.billingRate || '').trim(), String(b.notes || '').trim(), blacklisted, viableFte, req.session.userId];
     } else {
       sql = `UPDATE candidates SET job_id=$2, name=$3, work_rights=$4, location=$5, availability=$6,
-        cost=$7, billing_rate=$8, notes=$9, updated_at=now(), updated_by=$10 WHERE id=$1 RETURNING *`;
+        cost=$7, billing_rate=$8, notes=$9, blacklisted=$10, viable_fte=$11, updated_at=now(), updated_by=$12 WHERE id=$1 RETURNING *`;
       params = [req.params.id, jobId, name, String(b.workRights || ''), location, String(b.availability || '').trim(),
-        cost, String(b.billingRate || '').trim(), String(b.notes || '').trim(), req.session.userId];
+        cost, String(b.billingRate || '').trim(), String(b.notes || '').trim(), blacklisted, viableFte, req.session.userId];
     }
     const r = await pool.query(sql, params);
     if (!r.rows[0]) return res.status(404).json({ error: 'Candidate not found.' });
@@ -301,7 +314,7 @@ router.get('/export', async (req, res) => {
     const [jobsR, candsR, histR] = await Promise.all([
       pool.query('SELECT * FROM jobs ORDER BY created_at ASC'),
       pool.query(`SELECT id, job_id, name, work_rights, location, availability, cost, billing_rate,
-        notes, status, resume_name, resume_type, resume_size, created_at, updated_at
+        notes, status, blacklisted, viable_fte, resume_name, resume_type, resume_size, created_at, updated_at
         FROM candidates ORDER BY created_at ASC`),
       pool.query('SELECT candidate_id, status, at FROM candidate_status_history ORDER BY at ASC'),
     ]);
@@ -333,12 +346,13 @@ router.post('/import', async (req, res) => {
     for (const j of body.jobs) {
       await client.query(
         `INSERT INTO jobs (id, title, skills, client, partner, location, work_rights, engagement_type,
-          location_type, start_date, duration, onshore_rate, offshore_rate, description, status, created_by, updated_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$16)`,
+          location_type, start_date, duration, onshore_rate, offshore_rate, description, status, priority, created_by, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)`,
         [j.id, j.title || '', j.skills || '', j.client || '', j.partner || '', j.location || '',
           j.workRights || '', j.engagementType || '', j.locationType || '', j.startDate || '',
           j.duration || '', j.onshoreRate || '', j.offshoreRate || '', j.description || '',
-          JOB_STATUSES.includes(j.status) ? j.status : 'Open', req.session.userId]
+          JOB_STATUSES.includes(j.status) ? j.status : 'Open',
+          JOB_PRIORITIES.includes(j.priority) ? j.priority : 'Medium', req.session.userId]
       );
       const m = /^JOB-(\d+)$/.exec(j.id || '');
       if (m) maxJob = Math.max(maxJob, parseInt(m[1], 10));
@@ -358,11 +372,12 @@ router.post('/import', async (req, res) => {
       }
       await client.query(
         `INSERT INTO candidates (id, job_id, name, work_rights, location, availability, cost, billing_rate,
-          notes, status, resume_name, resume_type, resume_size, resume_data, created_by, updated_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)`,
+          notes, status, blacklisted, viable_fte, resume_name, resume_type, resume_size, resume_data, created_by, updated_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)`,
         [c.id, c.jobId || null, c.name || '', c.workRights || '', c.location || '', c.availability || '',
           c.cost || '', c.billingRate || '', c.notes || '',
           CANDIDATE_STATUS_KEYS.includes(c.status) ? c.status : 'Shortlisted',
+          !!c.blacklisted, !!c.viableFte,
           resumeName, resumeType, resumeSize, resumeData, req.session.userId]
       );
       const hist = Array.isArray(c.statusHistory) && c.statusHistory.length ? c.statusHistory : [{ status: c.status || 'Shortlisted', at: c.createdAt || new Date().toISOString() }];

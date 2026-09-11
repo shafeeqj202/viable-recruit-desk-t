@@ -1,6 +1,7 @@
 // Shared domain constants — mirrored in public/app.js for the client.
 
 const JOB_STATUSES = ['Open', 'On Hold', 'Closed'];
+const JOB_PRIORITIES = ['Low', 'Medium', 'High', 'Very High'];
 const WORK_RIGHTS_OPTIONS = [
   'Citizen', 'Permanent Resident', 'Work Visa (no sponsorship needed)',
   'Requires Sponsorship', 'Any / Unspecified',
@@ -36,6 +37,6 @@ const TERMINAL_STATUSES = {
 };
 
 module.exports = {
-  JOB_STATUSES, WORK_RIGHTS_OPTIONS, ENGAGEMENT_TYPES, LOCATION_TYPES,
+  JOB_STATUSES, JOB_PRIORITIES, WORK_RIGHTS_OPTIONS, ENGAGEMENT_TYPES, LOCATION_TYPES,
   RESUME_MAX_BYTES, CANDIDATE_STATUS_KEYS, STATUS_FLOW, TERMINAL_STATUSES,
 };
