@@ -23,8 +23,12 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
+  reset_token_hash TEXT,
+  reset_token_expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS counters (
   name TEXT PRIMARY KEY,
