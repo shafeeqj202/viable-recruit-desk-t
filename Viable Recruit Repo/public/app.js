@@ -109,9 +109,11 @@ var user = null; /* {id,name,email} once logged in */
 
 var ui = {
   loading: true,
-  authMode: 'login', /* 'login' | 'signup' */
+  authMode: 'login', /* 'login' | 'signup' | 'forgot' | 'reset' */
   authError: '',
   authBusy: false,
+  forgotSent: false,
+  resetToken: null,
   tab: 'dashboard',
   jobsSearch:'', jobsStatusFilter:'All',
   candSearch:'', candStatusFilter:'All', candJobFilter:'All',
@@ -122,6 +124,7 @@ var ui = {
   confirm:null,       /* {title, message, confirmLabel, danger, onYes} */
   resumePreview:null, /* {name, size, url} */
   backupOpen:false,
+  teamUsers:null,
   overrideOpenFor:null,
   saving:false,
   fieldErrors:{}
@@ -237,7 +240,7 @@ function renderApp(){
   persistUiToSession();
   var root = document.getElementById('root');
   if(ui.loading){ root.innerHTML = ''; return; }
-  if(!user){ root.innerHTML = renderAuthScreen(); return; }
+  if(!user || ui.resetToken){ root.innerHTML = renderAuthScreen(); return; }
   var html = '';
   html += renderTopbar();
   if(ui.tab==='dashboard') html += renderDashboard();
@@ -282,6 +285,20 @@ function renderResumePreview(){
 }
 
 function renderBackupModal(){
+  var teamHtml;
+  if(ui.teamUsers===null){
+    teamHtml = '<div class="hint">Loading…</div>';
+  } else if(!ui.teamUsers.length){
+    teamHtml = '<div class="hint">No logins found.</div>';
+  } else {
+    teamHtml = '<ul class="history-list">'+ui.teamUsers.map(function(u){
+      var isSelf = user && u.id===user.id;
+      return '<li><span>'+esc(u.name)+' <span class="muted">('+esc(u.email)+')</span></span>'+
+        (isSelf ? '<span class="muted" style="font-size:.76rem;">This is you</span>'
+                : '<button type="button" class="link-btn" data-action="remove-team-user" data-user="'+u.id+'" data-name="'+esc(u.name)+'" data-email="'+esc(u.email)+'">Remove</button>')+
+      '</li>';
+    }).join('')+'</ul>';
+  }
   return '<div class="overlay" data-action="backup-overlay-close">'+
     '<div class="modal" data-stop="1" style="max-width:560px;">'+
       '<div class="modal-head"><div><h2>Backup &amp; Restore</h2><div class="modal-sub">'+state.jobs.length+' job'+(state.jobs.length===1?'':'s')+' · '+state.candidates.length+' candidate'+(state.candidates.length===1?'':'s')+' currently in the tracker</div></div>'+
@@ -295,6 +312,11 @@ function renderBackupModal(){
         '<label>Restore from backup</label>'+
         '<div class="hint" style="margin:0 0 8px;">Replaces everything currently in the tracker with a previously downloaded backup file. This can’t be undone.</div>'+
         '<input type="file" accept="application/json" data-action="import-file-select">'+
+      '</div>'+
+      '<div class="field" style="margin-top:18px;">'+
+        '<label>Team Logins</label>'+
+        '<div class="hint" style="margin:0 0 8px;">Remove a teammate’s login if they’re locked out — it frees their email so they can sign up again. Any jobs or candidates they created or edited stay; only the attribution is cleared.</div>'+
+        teamHtml+
       '</div>'+
     '</div>'+
   '</div>';
@@ -678,6 +700,34 @@ function renderDrawer(){
 
 /* ---------- Auth screen ---------- */
 function renderAuthScreen(){
+  if(ui.authMode==='reset'){
+    return '<div class="auth-wrap"><div class="auth-card">'+
+      '<h1>Viable Recruit Desk</h1>'+
+      '<div class="auth-sub">Choose a new password.</div>'+
+      (ui.authError ? '<div class="banner bad" style="margin-bottom:14px;">'+esc(ui.authError)+'</div>' : '')+
+      '<form data-action="submit-reset-password">'+
+        '<div class="field"><label for="r-password">New password</label><input id="r-password" name="password" type="password" minlength="8" required autofocus><div class="hint">At least 8 characters.</div></div>'+
+        '<button type="submit" class="btn btn-primary btn-block" '+(ui.authBusy?'disabled':'')+'>'+(ui.authBusy?'Updating…':'Set new password')+'</button>'+
+      '</form>'+
+      '<div style="margin-top:14px;text-align:center;"><button type="button" class="link-btn" data-action="auth-switch" data-mode="login">Back to login</button></div>'+
+    '</div></div>';
+  }
+  if(ui.authMode==='forgot'){
+    return '<div class="auth-wrap"><div class="auth-card">'+
+      '<h1>Viable Recruit Desk</h1>'+
+      '<div class="auth-sub">Reset your password.</div>'+
+      (ui.authError ? '<div class="banner bad" style="margin-bottom:14px;">'+esc(ui.authError)+'</div>' : '')+
+      (ui.forgotSent ?
+        '<div class="banner" style="margin-bottom:14px;">If an account exists for that email, we’ve sent a reset link. Check your inbox (and spam folder) — it works for 1 hour.</div>'
+        :
+        '<form data-action="submit-forgot-password">'+
+          '<div class="field"><label for="fp-email">Email</label><input id="fp-email" name="email" type="email" required autofocus></div>'+
+          '<button type="submit" class="btn btn-primary btn-block" '+(ui.authBusy?'disabled':'')+'>'+(ui.authBusy?'Sending…':'Send reset link')+'</button>'+
+        '</form>'
+      )+
+      '<div style="margin-top:14px;text-align:center;"><button type="button" class="link-btn" data-action="auth-switch" data-mode="login">Back to login</button></div>'+
+    '</div></div>';
+  }
   var isSignup = ui.authMode==='signup';
   return '<div class="auth-wrap"><div class="auth-card">'+
     '<h1>Viable Recruit Desk</h1>'+
@@ -699,6 +749,7 @@ function renderAuthScreen(){
       '<form data-action="submit-login">'+
         '<div class="field"><label for="l-email">Email</label><input id="l-email" name="email" type="email" required></div>'+
         '<div class="field"><label for="l-password">Password</label><input id="l-password" name="password" type="password" required></div>'+
+        '<div style="text-align:right;margin:-6px 0 14px;"><button type="button" class="link-btn" data-action="auth-switch" data-mode="forgot" style="font-size:.78rem;">Forgot password?</button></div>'+
         '<button type="submit" class="btn btn-primary btn-block" '+(ui.authBusy?'disabled':'')+'>'+(ui.authBusy?'Logging in…':'Log in')+'</button>'+
       '</form>'
     )+
@@ -755,7 +806,16 @@ document.addEventListener('click', function(e){
   if(!el) return;
   var action = el.getAttribute('data-action');
 
-  if(action==='auth-switch'){ ui.authMode = el.getAttribute('data-mode'); ui.authError=''; renderApp(); return; }
+  if(action==='auth-switch'){
+    ui.authMode = el.getAttribute('data-mode');
+    ui.authError=''; ui.forgotSent=false;
+    if(ui.authMode!=='reset'){
+      ui.resetToken = null;
+      stripResetTokenFromUrl();
+    }
+    renderApp();
+    return;
+  }
   if(action==='logout'){
     api('POST','/api/auth/logout').then(function(){ user=null; state={jobs:[],candidates:[]}; renderApp(); });
     return;
@@ -807,9 +867,33 @@ document.addEventListener('click', function(e){
     return;
   }
 
-  if(action==='open-backup-modal'){ ui.backupOpen = true; renderApp(); return; }
+  if(action==='open-backup-modal'){
+    ui.backupOpen = true; ui.teamUsers = null; renderApp();
+    api('GET','/api/team/users').then(function(data){ ui.teamUsers = data.users||[]; renderApp(); })
+      .catch(function(){ ui.teamUsers = []; renderApp(); });
+    return;
+  }
   if(action==='close-backup-modal'){ ui.backupOpen=false; renderApp(); return; }
   if(action==='backup-overlay-close'){ if(e.target===el){ ui.backupOpen=false; renderApp(); } return; }
+  if(action==='remove-team-user'){
+    var rmUid = parseInt(el.getAttribute('data-user'),10);
+    var rmName = el.getAttribute('data-name');
+    var rmEmail = el.getAttribute('data-email');
+    askConfirm({
+      title:'Remove login',
+      message:'Remove the login for '+rmName+' ('+rmEmail+')? They’ll be able to sign up again with this email. Any jobs or candidates they created or edited stay — just without that attribution.',
+      confirmLabel:'Remove', danger:true,
+      onYes: function(){
+        runMutation(function(){ return api('DELETE','/api/team/users/'+rmUid); }, {
+          onSuccess: function(){
+            if(ui.teamUsers) ui.teamUsers = ui.teamUsers.filter(function(u){ return u.id!==rmUid; });
+            pushToast('Login removed.', 'good');
+          }
+        });
+      }
+    });
+    return;
+  }
 
   if(action==='drilldown'){ ui.drilldown = {jobId: el.getAttribute('data-job'), status: el.getAttribute('data-status')}; renderApp(); return; }
   if(action==='close-drilldown'){ ui.drilldown=null; renderApp(); return; }
@@ -889,6 +973,29 @@ document.addEventListener('submit', function(e){
       return loadState();
     }).then(function(){ renderApp(); }).catch(function(err){
       ui.authBusy=false; ui.authError = (err && err.message) || 'Could not create the account.'; renderApp();
+    });
+    return;
+  }
+  if(action==='submit-forgot-password'){
+    var ffd = new FormData(el);
+    ui.authBusy = true; ui.authError=''; renderApp();
+    api('POST','/api/auth/forgot-password', {email: ffd.get('email')}).then(function(){
+      ui.authBusy=false; ui.forgotSent=true; renderApp();
+    }).catch(function(err){
+      ui.authBusy=false; ui.authError = (err && err.message) || 'Could not send the reset link.'; renderApp();
+    });
+    return;
+  }
+  if(action==='submit-reset-password'){
+    var rfd = new FormData(el);
+    ui.authBusy = true; ui.authError=''; renderApp();
+    api('POST','/api/auth/reset-password', {token: ui.resetToken, password: rfd.get('password')}).then(function(){
+      ui.authBusy=false; ui.resetToken=null; ui.authMode='login'; ui.authError='';
+      stripResetTokenFromUrl();
+      renderApp();
+      pushToast('Password updated — log in with your new password.', 'good');
+    }).catch(function(err){
+      ui.authBusy=false; ui.authError = (err && err.message) || 'Could not reset the password.'; renderApp();
     });
     return;
   }
@@ -986,7 +1093,21 @@ document.addEventListener('keydown', function(e){
 });
 
 /* ---------- init ---------- */
+function stripResetTokenFromUrl(){
+  try{
+    if(!(window.history && window.history.replaceState)) return;
+    var url = new URL(window.location.href);
+    if(!url.searchParams.has('reset_token')) return;
+    url.searchParams.delete('reset_token');
+    window.history.replaceState({}, '', url.pathname + (url.search?url.search:'') + url.hash);
+  }catch(e){}
+}
 function init(){
+  try{
+    var params = new URLSearchParams(window.location.search);
+    var rt = params.get('reset_token');
+    if(rt){ ui.resetToken = rt; ui.authMode = 'reset'; }
+  }catch(e){}
   renderApp();
   api('GET','/api/auth/me').then(function(data){
     user = data.user;
