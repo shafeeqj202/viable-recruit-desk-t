@@ -1,18 +1,11 @@
 const express = require('express');
-const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { pool } = require('../db');
-const { sendPasswordResetEmail } = require('../mailer');
 
 const router = express.Router();
 
 const INVITE_CODE = process.env.TEAM_INVITE_CODE || '';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
-
-function hashToken(token) {
-  return crypto.createHash('sha256').update(String(token)).digest('hex');
-}
 
 function publicUser(row) {
   return { id: row.id, name: row.name, email: row.email };
@@ -69,58 +62,27 @@ router.post('/login', async (req, res) => {
   }
 });
 
-router.post('/forgot-password', async (req, res) => {
-  try {
-    const email = String((req.body && req.body.email) || '').trim().toLowerCase();
-    if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ error: 'A valid email is required.' });
-
-    const result = await pool.query('SELECT id, name, email FROM users WHERE email = $1', [email]);
-    const row = result.rows[0];
-    if (row) {
-      const token = crypto.randomBytes(32).toString('hex');
-      const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
-      await pool.query(
-        'UPDATE users SET reset_token_hash = $2, reset_token_expires_at = $3 WHERE id = $1',
-        [row.id, hashToken(token), expiresAt]
-      );
-      const base = process.env.APP_BASE_URL || (req.protocol + '://' + req.get('host'));
-      const resetUrl = base + '/?reset_token=' + token;
-      try {
-        await sendPasswordResetEmail(row.email, resetUrl);
-      } catch (mailErr) {
-        console.error('Could not send password reset email', mailErr);
-      }
-    }
-    // Same response whether or not the email has an account — avoids revealing
-    // who's registered.
-    res.json({ ok: true, message: 'If an account exists for that email, a reset link has been sent.' });
-  } catch (err) {
-    console.error('forgot-password error', err);
-    res.status(500).json({ error: 'Could not process that request. Please try again.' });
-  }
-});
-
+// Self-service password reset — no email involved. Proof of being on the
+// team is the same shared invite code used to sign up in the first place,
+// so this follows the same trust model as sign-up: anyone who knows the
+// invite code and an account's email can set that account a new password.
 router.post('/reset-password', async (req, res) => {
   try {
-    const token = req.body && req.body.token;
+    const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+    const inviteCode = req.body && req.body.inviteCode;
     const password = req.body && req.body.password;
-    if (!token) return res.status(400).json({ error: 'Missing reset token.' });
+
+    if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ error: 'A valid email is required.' });
+    if (!INVITE_CODE) return res.status(500).json({ error: 'Password reset is not configured on this server.' });
+    if (String(inviteCode || '') !== INVITE_CODE) return res.status(403).json({ error: 'That team invite code is not correct.' });
     if (!password || String(password).length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
 
-    const result = await pool.query(
-      'SELECT id, reset_token_expires_at FROM users WHERE reset_token_hash = $1',
-      [hashToken(token)]
-    );
+    const result = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
     const row = result.rows[0];
-    if (!row || !row.reset_token_expires_at || new Date(row.reset_token_expires_at).getTime() < Date.now()) {
-      return res.status(400).json({ error: 'That reset link is invalid or has expired. Please request a new one.' });
-    }
+    if (!row) return res.status(404).json({ error: 'No account found with that email.' });
 
     const hash = await bcrypt.hash(String(password), 10);
-    await pool.query(
-      'UPDATE users SET password_hash = $2, reset_token_hash = NULL, reset_token_expires_at = NULL WHERE id = $1',
-      [row.id, hash]
-    );
+    await pool.query('UPDATE users SET password_hash = $2 WHERE id = $1', [row.id, hash]);
     res.json({ ok: true });
   } catch (err) {
     console.error('reset-password error', err);
