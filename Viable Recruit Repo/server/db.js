@@ -23,12 +23,14 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  reset_token_hash TEXT,
-  reset_token_expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_hash TEXT;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMPTZ;
+-- Password reset went through two designs before settling on the
+-- invite-code approach (no email, no tokens) — drop the leftover columns
+-- from the email-link version in case this is running against a database
+-- that already picked them up.
+ALTER TABLE users DROP COLUMN IF EXISTS reset_token_hash;
+ALTER TABLE users DROP COLUMN IF EXISTS reset_token_expires_at;
 
 CREATE TABLE IF NOT EXISTS counters (
   name TEXT PRIMARY KEY,
